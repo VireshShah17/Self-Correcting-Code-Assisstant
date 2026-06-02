@@ -1,3 +1,4 @@
+import os
 import subprocess
 import ast
 
@@ -13,13 +14,24 @@ def clean_code(raw_text: str) -> str:
 
 def execute_code(code_string: str) -> dict:
     """
-        Writes the code to a file and executes it via subprocess.
+        Writes the code to a file and executes it safely inside a Docker container.
     """
     with open("generated_workspace.py", "w", encoding = "utf-8") as code_file:
         code_file.write(code_string)
 
+    # DOCKER COMMAND BREAKDOWN:
+    # run --rm: Run the container and immediately delete it when finished.
+    # -v {os.getcwd()}:/app: Mount our local folder into the container's /app folder.
+    # agent-sandbox: The name of the Docker image we are using.
     result = subprocess.run(
-        ["python3", "generated_workspace.py"], capture_output = True, text = True
+        [
+            "docker", "run", "--rm",
+            "-v", f"{os.getcwd()}:/app",
+            "-w", "/app",
+            "agent-sandbox",
+            "python3", "generated_workspace.py"
+        ],
+        capture_output = True, text = True
     )
 
     if result.returncode == 0:

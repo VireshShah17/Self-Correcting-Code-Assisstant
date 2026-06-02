@@ -37,6 +37,7 @@ def run_agent(user_task: str):
     attempt = 0
     needs_new_code = True  # Flag to determine if we need to ask the AI for new code or just retry the same code after auto-installing a package
     code_string = ""  # Initialize code_string to ensure it's defined before the loop
+    
     # We start with a system message that sets the behavior of the AI, and a human message that contains the user's task. As we loop, we will append to this messages list with the AI's generated code and the human's feedback on any errors, creating a conversation history that the AI can learn from to self-correct.
     messages = [
         SystemMessage(
@@ -89,7 +90,7 @@ def run_agent(user_task: str):
             continue
 
         # Execute it
-        yield {"status": "executing", "message": f"⏳ Attempt {attempt + 1}: Executing Code..."}
+        yield {"status": "executing", "message": f"⏳ Attempt {attempt + 1}: Executing Code inside Docker..."}
         execution_result = execute_code(code_string)
 
         # Check the result and log appropriately. If it failed, we append the AI's code and the error message to the conversation history so that the AI can learn from its mistakes in the next iteration.
@@ -99,27 +100,31 @@ def run_agent(user_task: str):
             break
         else:
             error_msg = execution_result["error"]
-            # New feature: Auto-detect missing packages and attempt to install them without needing to ask the AI for new code. This is a common issue where the AI forgets to include an import statement for a package it uses, leading to a ModuleNotFoundError. By catching this specific error, we can extract the missing package name and run pip install automatically, then immediately retry the same code.
+            # New feature: Auto-detect missing packages and attempt to install them dynamically into the Docker image. 
             if "ModuleNotFoundError" in error_msg:
                 # Extract the package name using Regex
                 match = re.search(r"No module named '(.+?)'", error_msg)
                 if match:
                     package_name = match.group(1)
-                    yield {"status": "installing", "message": f"📦 Missing package detected: '{package_name}'. Auto-installing..."}
+                    yield {"status": "installing", "message": f"📦 Missing package detected: '{package_name}'. Rebuilding Docker Sandbox..."}
                     
-                    # Run pip install (using python3 -m pip to ensure it goes into the venv)
-                    pip_result = subprocess.run(
-                        ["python3", "-m", "pip", "install", package_name], 
-                        capture_output = True, 
-                        text = True
+                    # 1. Append the pip install command to the Dockerfile
+                    with open("Dockerfile", "a", encoding="utf-8") as dockerfile:
+                        dockerfile.write(f"\nRUN pip install {package_name}")
+                    
+                    # 2. Rebuild the Docker image
+                    build_result = subprocess.run(
+                        ["docker", "build", "-t", "agent-sandbox", "."], 
+                        capture_output=True, 
+                        text=True
                     )
                     
-                    if pip_result.returncode == 0:
-                        yield {"status": "install_success", "message": f"✅ Successfully installed '{package_name}'! Re-running the same code..."}
+                    if build_result.returncode == 0:
+                        yield {"status": "install_success", "message": f"✅ Sandbox upgraded with '{package_name}'! Re-running code..."}
                         needs_new_code = False  # Don't ask the AI for new code
                         continue                # Instantly restart the while loop to re-execute
                     else:
-                        yield {"status": "install_error", "error": f"❌ Failed to auto-install '{package_name}'. Falling back to AI for help."}
+                        yield {"status": "install_error", "error": f"❌ Failed to upgrade Sandbox with '{package_name}'. Falling back to AI."}
 
             yield {"status": "execution_error", "error": error_msg.strip()}
             
