@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pydantic import SecretStr
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from helpers import clean_code, execute_code, validate_code_ast
 
 # --- Logging Setup ---
 # Configure standard logging
@@ -25,32 +26,6 @@ if not GROQ_API_KEY:
 groq_client = ChatGroq(
     api_key=SecretStr(GROQ_API_KEY), model = "llama-3.1-8b-instant", temperature = 0
 )
-
-
-def clean_code(raw_text: str) -> str:
-    """
-        Removes markdown backticks if the AI accidentally includes them.
-        This is a common issue where the AI might wrap code in markdown formatting, which would cause syntax errors when we try to execute it."""
-    cleaned = raw_text.replace("```python", "").replace("```", "").strip()
-
-    return cleaned
-
-
-def execute_code(code_string: str) -> dict:
-    """
-        Writes the code to a file and executes it via subprocess.
-    """
-    with open("generated_workspace.py", "w", encoding = "utf-8") as code_file:
-        code_file.write(code_string)
-
-    result = subprocess.run(
-        ["python3", "generated_workspace.py"], capture_output = True, text = True
-    )
-
-    if result.returncode == 0:
-        return {"success": True, "output": result.stdout}
-
-    return {"success": False, "error": result.stderr}
 
 # Configuration
 MAX_RETRIES = 3
@@ -94,6 +69,20 @@ while attempt < MAX_RETRIES:
 
         # Clean the code before executing
         code_string = clean_code(code_string)
+
+    # Validate the code for security before executing. This is a critical step to prevent the execution of harmful code that could damage the system or compromise security. By parsing the code's abstract syntax tree (AST), we can detect any import statements and block those that reference forbidden modules like os, sys, subprocess, etc. If the validation fails, we log a security warning and send a message back to the AI asking it to rewrite the code without using the forbidden module, then we continue to the next iteration of the loop without executing any code.
+    validation = validate_code_ast(code_string)
+    if not validation["valid"]:
+        logging.error(f"\n🚫 SECURITY BLOCK: {validation['error']}")
+        logging.info("Sending security warning back to AI...\n")
+        
+        messages.append(AIMessage(content=code_string))
+        messages.append(HumanMessage(
+            content=f"Your code was blocked by the security linter:\n{validation['error']}\nPlease rewrite the code without using the forbidden module to accomplish the task."
+        ))
+        needs_new_code = True
+        attempt += 1
+        continue
 
     # Execute it
     execution_result = execute_code(code_string)
